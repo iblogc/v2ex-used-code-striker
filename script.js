@@ -2,8 +2,8 @@
 // @name         V2EX Used Code Striker++
 // @namespace    http://tampermonkey.net/
 // @version      1.3
-// @description  Marks used codes in V2EX posts, shows claimant username (toggleable), and allows keyword configuration.
-// @author       Your Name (or AI Assistant)
+// @description  在 V2EX 送码帖中，根据被评论区用户领取的激活码/邀请码，自动划掉主楼/附言中被提及的 Code。
+// @author       与Gemini协作完成
 // @match        https://www.v2ex.com/t/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=v2ex.com
 // @grant        GM_getValue
@@ -76,7 +76,7 @@
     }
 
     // --- Menu Commands ---
-    GM_registerMenuCommand('配置 V2EX 划掉Code关键词', () => {
+    GM_registerMenuCommand('配置 V2EX 划掉 Code 关键词', () => {
         const currentKeywords = GM_getValue(STORAGE_KEY_KEYWORDS, defaultUsedKeywords.join(','));
         const newKeywordsString = prompt(
             '请输入评论中表示Code已使用的关键词，用英文逗号 (,) 分隔。\n\n' +
