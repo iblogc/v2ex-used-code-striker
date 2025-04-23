@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         V2EX Used Code Striker++
 // @namespace    http://tampermonkey.net/
-// @version      1.4.1
+// @version      1.4.2
 // @description  在 V2EX 送码帖中，根据评论和配置，自动划掉主楼/附言中被提及的 Code，并可选显示领取者。通过设置界面配置。
 // @author       与Gemini协作完成 (Based on iblogc's work)
 // @match        https://www.v2ex.com/t/*
