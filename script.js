@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         V2EX Used Code Striker++
 // @namespace    http://tampermonkey.net/
-// @version      1.4.2
-// @description  在 V2EX 送码帖中，根据评论和配置，自动划掉主楼/附言中被提及的 Code，并可选显示领取者。通过设置界面配置。
-// @author       与Gemini协作完成 (Based on iblogc's work)
+// @version      1.5.0
+// @description  在 V2EX 送码帖中，根据评论和配置，自动划掉主楼/附言中被提及的 Code，并可选显示领取者。正则和关键词均可配置。
+// @author       与Gemini协作完成
 // @match        https://www.v2ex.com/t/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=v2ex.com
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
 // @license      MIT
@@ -17,6 +18,7 @@
     'use strict';
 
     // --- Storage Keys ---
+    const STORAGE_KEY_CODE_REGEX = 'v2ex_striker_code_regex';
     const STORAGE_KEY_TITLE_KEYWORDS = 'v2ex_striker_title_keywords';
     const STORAGE_KEY_COMMENT_KEYWORDS = 'v2ex_striker_comment_keywords';
     const STORAGE_KEY_SHOW_USER = 'v2ex_striker_show_user';
@@ -24,14 +26,37 @@
     const OVERLAY_ID = 'v2ex-striker-settings-overlay';
 
     // --- Default Settings ---
+    const defaultCodeRegexString = '/(?:[A-Z0-9][-_]?){6,}/gi';
     const defaultTitleKeywords = ['送', '发', '福利', '邀请码', '激活码', '码', 'giveaway', 'invite', 'code'];
     const defaultCommentKeywords = ['用', 'used', 'taken', '领', 'redeem', 'thx', '感谢'];
     const defaultShowUserInfo = true;
 
+    // --- Helper: Parse Regex String ---
+    const defaultCodeRegexObject = new RegExp(defaultCodeRegexString.match(/^\/(.+)\/([gimyus]*)$/)[1], defaultCodeRegexString.match(/^\/(.+)\/([gimyus]*)$/)[2]);
+
+    function parseRegexString(regexString) {
+        try {
+            const match = regexString.match(/^\/(.+)\/([gimyus]*)$/);
+            if (match && match[1]) { // Ensure pattern part exists
+                return new RegExp(match[1], match[2] || ''); // Use flags or empty string if none
+            } else {
+                console.warn('V2EX Striker: Invalid regex format in storage ("' + regexString + '"). Using default.');
+                return defaultCodeRegexObject;
+            }
+        } catch (e) {
+            console.error('V2EX Striker: Error parsing stored regex ("' + regexString + '"). Using default.', e);
+            return defaultCodeRegexObject;
+        }
+    }
+
     // --- Load Settings ---
+    const codeRegexString = GM_getValue(STORAGE_KEY_CODE_REGEX, defaultCodeRegexString);
     const titleKeywordsString = GM_getValue(STORAGE_KEY_TITLE_KEYWORDS, defaultTitleKeywords.join(','));
     const commentKeywordsString = GM_getValue(STORAGE_KEY_COMMENT_KEYWORDS, defaultCommentKeywords.join(','));
     const showUserInfoEnabled = GM_getValue(STORAGE_KEY_SHOW_USER, defaultShowUserInfo);
+
+    // Parse loaded regex
+    const activeCodeRegex = parseRegexString(codeRegexString); // This is the RegExp object to use
 
     let activeTitleKeywords = [];
     if (titleKeywordsString && titleKeywordsString.trim() !== '') {
@@ -43,28 +68,48 @@
         activeCommentKeywords = commentKeywordsString.split(',').map(kw => kw.trim()).filter(Boolean);
     }
 
+    console.log('V2EX Striker: Active Code Regex:', activeCodeRegex);
+    console.log('V2EX Striker: Title Keywords:', activeTitleKeywords.length > 0 ? activeTitleKeywords : '(Inactive - No keywords configured)');
+    console.log('V2EX Striker: Comment Keywords:', activeCommentKeywords.length > 0 ? activeCommentKeywords : '(None - All comment codes considered used)');
+    console.log('V2EX Striker: Show Username:', showUserInfoEnabled);
+
+
     // --- Settings Modal Functions (Define early) ---
     function buildSettingsModal() {
-        // (Modal building code remains the same as previous version)
-        // Remove existing modal if any
         document.getElementById(MODAL_ID)?.remove();
         document.getElementById(OVERLAY_ID)?.remove();
 
-        // Overlay
         const overlay = document.createElement('div');
         overlay.id = OVERLAY_ID;
         overlay.onclick = closeSettingsModal;
 
-        // Modal Container
         const modal = document.createElement('div');
         modal.id = MODAL_ID;
 
-        // Title
         const title = document.createElement('h2');
         title.textContent = 'V2EX Used Code Striker 设置';
         modal.appendChild(title);
 
-        // 1. Title Keywords
+        // 1. Code Regex
+        const regexDiv = document.createElement('div');
+        regexDiv.className = 'setting-item';
+        const regexLabel = document.createElement('label');
+        regexLabel.textContent = 'Code 正则表达式 (格式: /pattern/flags):';
+        regexLabel.htmlFor = 'v2ex-striker-regex-input';
+        const regexInput = document.createElement('input'); // Use text input for regex
+        regexInput.type = 'text';
+        regexInput.id = 'v2ex-striker-regex-input';
+        regexInput.value = GM_getValue(STORAGE_KEY_CODE_REGEX, defaultCodeRegexString); // Load string value
+        regexDiv.appendChild(regexLabel);
+        regexDiv.appendChild(regexInput);
+        modal.appendChild(regexDiv);
+        const regexDesc = document.createElement('p');
+        regexDesc.className = 'setting-desc';
+        regexDesc.textContent = '用于匹配主楼和评论中 Code 的正则表达式。';
+        modal.appendChild(regexDesc);
+
+
+        // 2. Title Keywords
         const titleDiv = document.createElement('div');
         titleDiv.className = 'setting-item';
         const titleLabel = document.createElement('label');
@@ -79,10 +124,10 @@
         modal.appendChild(titleDiv);
         const titleDesc = document.createElement('p');
         titleDesc.className = 'setting-desc';
-        titleDesc.textContent = '包含这些词的帖子标题才会激活脚本。留空则不根据标题判断（不推荐）。';
+        titleDesc.textContent = '包含这些词的帖子标题才会激活脚本。留空（不推荐）则不根据标题判断，所有帖子都会执行脚本。';
         modal.appendChild(titleDesc);
 
-        // 2. Comment Keywords
+        // 3. Comment Keywords
         const commentDiv = document.createElement('div');
         commentDiv.className = 'setting-item';
         const commentLabel = document.createElement('label');
@@ -97,10 +142,10 @@
         modal.appendChild(commentDiv);
         const commentDesc = document.createElement('p');
         commentDesc.className = 'setting-desc';
-        commentDesc.textContent = '评论需包含这些词才会标记对应 Code。留空则评论中所有 Code 都被标记。';
+        commentDesc.textContent = '评论需包含这些词才会标记对应 Code。留空则评论中提到的所有 Code 都被标记。';
         modal.appendChild(commentDesc);
 
-        // 3. Show User Info
+        // 4. Show User Info
         const showUserDiv = document.createElement('div');
         showUserDiv.className = 'setting-item setting-item-checkbox';
         const showUserInput = document.createElement('input');
@@ -114,19 +159,34 @@
         showUserDiv.appendChild(showUserLabel);
         modal.appendChild(showUserDiv);
 
-        // Action Buttons
-        const buttonDiv = document.createElement('div');
-        buttonDiv.className = 'setting-actions';
-        const saveButton = document.createElement('button');
-        saveButton.textContent = '保存设置';
-        saveButton.onclick = saveSettings;
+        // --- Action Buttons ---
+        const buttonContainer = document.createElement('div');
+        buttonContainer.className = 'setting-actions-container'; // Container for alignment
+
+        const resetButton = document.createElement('button');
+        resetButton.textContent = '重置为默认';
+        resetButton.className = 'reset-button';
+        resetButton.onclick = resetSettingsToDefaults;
+
+        const actionButtonsDiv = document.createElement('div');
+        actionButtonsDiv.className = 'setting-actions'; // Right-aligned buttons
+
         const cancelButton = document.createElement('button');
         cancelButton.textContent = '取消';
         cancelButton.className = 'cancel-button';
         cancelButton.onclick = closeSettingsModal;
-        buttonDiv.appendChild(cancelButton);
-        buttonDiv.appendChild(saveButton);
-        modal.appendChild(buttonDiv);
+
+        const saveButton = document.createElement('button');
+        saveButton.textContent = '保存设置';
+        saveButton.className = 'save-button';
+        saveButton.onclick = saveSettings;
+
+        actionButtonsDiv.appendChild(cancelButton);
+        actionButtonsDiv.appendChild(saveButton);
+
+        buttonContainer.appendChild(resetButton); // Reset on the left
+        buttonContainer.appendChild(actionButtonsDiv); // Save/Cancel group on the right
+        modal.appendChild(buttonContainer);
 
         document.body.appendChild(overlay);
         document.body.appendChild(modal);
@@ -138,10 +198,19 @@
     }
 
     function saveSettings() {
+        const regexValue = document.getElementById('v2ex-striker-regex-input').value.trim();
         const titleKeywords = document.getElementById('v2ex-striker-title-keywords-input').value.trim();
         const commentKeywords = document.getElementById('v2ex-striker-comment-keywords-input').value.trim();
         const showUser = document.getElementById('v2ex-striker-show-user-input').checked;
 
+        // Basic validation for regex format (optional but good practice)
+        if (!/^\/.+\/[gimyus]*$/.test(regexValue) && regexValue !== '') {
+             if (!confirm(`输入的正则表达式 "${regexValue}" 格式可能不正确 (应为 /pattern/flags)，确定要保存吗？`)) {
+                 return; // Don't save if user cancels
+             }
+        }
+
+        GM_setValue(STORAGE_KEY_CODE_REGEX, regexValue);
         GM_setValue(STORAGE_KEY_TITLE_KEYWORDS, titleKeywords);
         GM_setValue(STORAGE_KEY_COMMENT_KEYWORDS, commentKeywords);
         GM_setValue(STORAGE_KEY_SHOW_USER, showUser);
@@ -150,37 +219,89 @@
         alert('设置已保存！\n请刷新页面以应用新的设置。');
     }
 
+    function resetSettingsToDefaults() {
+        if (confirm("确定要将正则、标题关键词和评论区关键词重置为默认设置吗？")) {
+            // Set storage back to defaults
+            GM_setValue(STORAGE_KEY_CODE_REGEX, defaultCodeRegexString);
+            GM_setValue(STORAGE_KEY_TITLE_KEYWORDS, defaultTitleKeywords.join(','));
+            GM_setValue(STORAGE_KEY_COMMENT_KEYWORDS, defaultCommentKeywords.join(','));
+            GM_setValue(STORAGE_KEY_SHOW_USER, defaultShowUserInfo);
+
+            // Update fields in the current modal immediately
+            const modal = document.getElementById(MODAL_ID);
+            if (modal) {
+                modal.querySelector('#v2ex-striker-regex-input').value = defaultCodeRegexString;
+                modal.querySelector('#v2ex-striker-title-keywords-input').value = defaultTitleKeywords.join(',');
+                modal.querySelector('#v2ex-striker-comment-keywords-input').value = defaultCommentKeywords.join(',');
+                modal.querySelector('#v2ex-striker-show-user-input').checked = defaultShowUserInfo;
+                // Show user checkbox remains as it was
+            }
+            // No need for alert here, immediate update is feedback enough
+            console.log("V2EX Striker: Settings reset to defaults (excluding Show User).");
+        }
+    }
+
     // --- Add Modal Styles (Always add styles) ---
+    // Added styles for input[type=text] and adjusted button layout
     GM_addStyle(`
         #${OVERLAY_ID} { /* Styles remain the same */
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background-color: rgba(0, 0, 0, 0.4); z-index: 9998; backdrop-filter: blur(3px);
+            position: fixed !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important;
+            background-color: rgba(0, 0, 0, 0.4) !important; z-index: 99998 !important; backdrop-filter: blur(3px);
+            display: block !important; margin: 0 !important; padding: 0 !important; border: none !important;
         }
         #${MODAL_ID} { /* Styles remain the same */
-            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 90%; max-width: 500px; background-color: #f9f9f9; border-radius: 12px;
-            box-shadow: 0 5px 25px rgba(0, 0, 0, 0.15); padding: 25px 30px; z-index: 9999;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-            color: #333; box-sizing: border-box;
+            position: fixed !important; top: 50% !important; left: 50% !important; transform: translate(-50%, -50%) !important;
+            width: clamp(300px, 90%, 500px) !important; max-width: 500px !important; background-color: #f9f9f9 !important; border-radius: 12px !important;
+            box-shadow: 0 5px 25px rgba(0, 0, 0, 0.15) !important; padding: 25px 30px !important; z-index: 99999 !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif !important;
+            color: #333 !important; box-sizing: border-box !important; display: block !important; margin: 0 !important; border: none !important;
+            max-height: 95vh !important; overflow-y: auto !important; /* Allow scrolling */
         }
-        #${MODAL_ID} h2 { margin-top: 0; margin-bottom: 25px; font-size: 1.4em; font-weight: 600; text-align: center; color: #1d1d1f; }
-        #${MODAL_ID} .setting-item { margin-bottom: 10px; }
-        #${MODAL_ID} .setting-desc { font-size: 0.8em; color: #6e6e73; margin-top: 0px; margin-bottom: 15px; }
-        #${MODAL_ID} label { display: block; margin-bottom: 5px; font-weight: 500; font-size: 0.95em; color: #333; }
+        #${MODAL_ID} h2 { margin-top: 0 !important; margin-bottom: 25px !important; font-size: 1.4em !important; font-weight: 600 !important; text-align: center !important; color: #1d1d1f !important; }
+        #${MODAL_ID} .setting-item { margin-bottom: 10px !important; }
+        #${MODAL_ID} .setting-desc { font-size: 0.8em !important; color: #6e6e73 !important; margin-top: 0px !important; margin-bottom: 15px !important; }
+        #${MODAL_ID} label { display: block !important; margin-bottom: 5px !important; font-weight: 500 !important; font-size: 0.95em !important; color: #333 !important; }
+        #${MODAL_ID} input[type="text"],
         #${MODAL_ID} textarea {
-            width: 100%; padding: 10px; border: 1px solid #d2d2d7; border-radius: 6px;
-            font-size: 0.9em; box-sizing: border-box; resize: vertical; min-height: 40px; font-family: inherit;
+            width: 100% !important; padding: 10px !important; border: 1px solid #d2d2d7 !important; border-radius: 6px !important;
+            font-size: 0.9em !important; box-sizing: border-box !important; font-family: inherit !important; background-color: #fff !important; color: #333 !important;
         }
-        #${MODAL_ID} textarea:focus { border-color: #007aff; outline: none; box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2); }
-        #${MODAL_ID} .setting-item-checkbox { display: flex; align-items: center; margin-top: 20px; margin-bottom: 25px; }
-        #${MODAL_ID} .setting-item-checkbox input[type="checkbox"] { margin-right: 10px; width: 16px; height: 16px; accent-color: #007aff; }
-        #${MODAL_ID} .setting-item-checkbox label { margin-bottom: 0; font-weight: normal; }
-        #${MODAL_ID} .setting-actions { margin-top: 25px; display: flex; justify-content: flex-end; gap: 10px; }
-        #${MODAL_ID} button { padding: 10px 20px; border: none; border-radius: 6px; font-size: 0.95em; font-weight: 500; cursor: pointer; transition: background-color 0.2s ease; }
-        #${MODAL_ID} button:last-child { background-color: #007aff; color: white; }
-        #${MODAL_ID} button:last-child:hover { background-color: #005ecf; }
-        #${MODAL_ID} button.cancel-button { background-color: #e5e5ea; color: #1d1d1f; }
-        #${MODAL_ID} button.cancel-button:hover { background-color: #dcdce0; }
+        #${MODAL_ID} textarea { resize: vertical !important; min-height: 40px !important; }
+        #${MODAL_ID} input[type="text"]:focus,
+        #${MODAL_ID} textarea:focus {
+            border-color: #007aff !important; outline: none !important; box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2) !important;
+         }
+        #${MODAL_ID} .setting-item-checkbox { display: flex !important; align-items: center !important; margin-top: 20px !important; margin-bottom: 25px !important; }
+        #${MODAL_ID} .setting-item-checkbox input[type="checkbox"] { margin-right: 10px !important; width: 16px !important; height: 16px !important; accent-color: #007aff !important; vertical-align: middle !important; }
+        #${MODAL_ID} .setting-item-checkbox label { margin-bottom: 0 !important; font-weight: normal !important; display: inline-block !important; vertical-align: middle !important; }
+        #${MODAL_ID} .setting-actions-container { /* New container for button layout */
+            margin-top: 25px !important;
+            display: flex !important;
+            justify-content: space-between !important; /* Space between reset and save/cancel */
+            align-items: center !important;
+        }
+        #${MODAL_ID} .setting-actions { /* Group for save/cancel */
+            display: flex !important;
+            gap: 10px !important;
+        }
+        #${MODAL_ID} button {
+            padding: 10px 20px !important; border: none !important; border-radius: 6px !important;
+            font-size: 0.95em !important; font-weight: 500 !important; cursor: pointer !important; transition: background-color 0.2s ease !important;
+        }
+        #${MODAL_ID} button.reset-button {
+             background-color: #f5f5f7; /* Lighter gray for reset */
+             color: #555;
+             padding: 10px 15px !important; /* Slightly smaller padding maybe */
+        }
+         #${MODAL_ID} button.reset-button:hover {
+             background-color: #e9e9ed;
+         }
+        #${MODAL_ID} button.save-button { 
+            background-color: #007aff !important; color: white !important;
+        }
+        #${MODAL_ID} button.save-button:hover { background-color: #005ecf !important; }
+        #${MODAL_ID} button.cancel-button { background-color: #e5e5ea !important; color: #1d1d1f !important; }
+        #${MODAL_ID} button.cancel-button:hover { background-color: #dcdce0 !important; }
     `);
 
     // --- Menu Command Registration (Always register) ---
@@ -195,10 +316,8 @@
     if (activeTitleKeywords.length > 0) {
         isGiveawayPost = activeTitleKeywords.some(keyword => postTitle.includes(keyword));
     } else {
-        console.log('V2EX Striker: Title keyword list is empty, skipping title check (not recommended).');
-        // If title keywords are empty, maybe run the script anyway? Or force user to add keywords?
-        // For now, let's assume empty means run always (though the UI description discourages it).
-        isGiveawayPost = true; // Or set to false if empty list should disable the script.
+        console.log('V2EX Striker: Title keyword list is empty, skipping title check.');
+        isGiveawayPost = true; // Assume run always if title keywords are empty
     }
 
     if (!isGiveawayPost) {
@@ -211,7 +330,7 @@
     console.log('V2EX Striker: Post title matched. Running main script logic...');
 
     // --- Regex, Styles, Classes (Define constants used below) ---
-    const codeRegex = /(?:[A-Z0-9][-_]?){6,}/gi;
+    // Use activeCodeRegex parsed earlier
     const usedStyle = 'text-decoration: line-through; color: grey;';
     const userInfoStyle = 'font-size: smaller; margin-left: 5px; color: #999; text-decoration: none;';
     const markedClass = 'v2ex-used-code-marked';
@@ -220,7 +339,6 @@
     // --- Keyword Regex Building (Comment Keywords) ---
     let keywordRegexCombinedTest = (text) => false; // Default test function
     if (activeCommentKeywords.length > 0) {
-        // (Keyword regex building code remains the same)
         const wordCharRegex = /^[a-zA-Z0-9_]+$/;
         const englishKeywords = activeCommentKeywords.filter(kw => wordCharRegex.test(kw));
         const nonWordBoundaryKeywords = activeCommentKeywords.filter(kw => !wordCharRegex.test(kw));
@@ -245,7 +363,6 @@
 
     // --- Helper Function: findTextNodes (Unchanged) ---
     function findTextNodes(element, textNodes) {
-        // (findTextNodes code remains the same)
         if (!element) return;
         for (const node of element.childNodes) {
             if (node.nodeType === Node.TEXT_NODE) {
@@ -266,18 +383,17 @@
         }
     }
 
-    // --- Main Logic (Extraction and Marking - Adapted from v1.3) ---
+    // --- Main Logic (Extraction and Marking) ---
     console.log('V2EX Striker: Starting code extraction and marking...');
 
     // 1. Extract used Codes and Claimant Info from comments
     const claimedCodeInfo = new Map();
     const commentElements = document.querySelectorAll('div.cell[id^="r_"]');
-    console.log(`V2EX Striker: Found ${commentElements.length} comment cells.`);
+    // console.log(`V2EX Striker: Found ${commentElements.length} comment cells.`); // Less verbose
 
     const commentKeywordsAreActive = activeCommentKeywords.length > 0;
 
-    commentElements.forEach((commentCell, index) => {
-        // (Comment processing logic remains the same)
+    commentElements.forEach((commentCell) => {
         const replyContentEl = commentCell.querySelector('.reply_content');
         const userLinkEl = commentCell.querySelector('strong > a[href^="/member/"]');
         if (!replyContentEl || !userLinkEl) return;
@@ -285,7 +401,9 @@
         const commentText = replyContentEl.textContent;
         const username = userLinkEl.textContent;
         const profileUrl = userLinkEl.href;
-        const potentialCodes = commentText.match(codeRegex);
+
+        // Use the globally loaded activeCodeRegex here
+        const potentialCodes = commentText.match(activeCodeRegex); // Apply active regex
 
         if (potentialCodes) {
             let commentMatchesCriteria = false;
@@ -299,7 +417,6 @@
                 potentialCodes.forEach(code => {
                     const codeUpper = code.toUpperCase();
                     if (!claimedCodeInfo.has(codeUpper)) {
-                        // console.log(`V2EX Striker: Found potential used code "${code}" by user "${username}" in comment ${index + 1}`);
                         claimedCodeInfo.set(codeUpper, { username, profileUrl });
                     }
                 });
@@ -307,7 +424,7 @@
         }
     });
 
-    console.log(`V2EX Striker: Extracted info for ${claimedCodeInfo.size} unique potential used codes based on config:`, claimedCodeInfo.size > 0 ? [...claimedCodeInfo.keys()] : 'None'); // Log keys for less clutter
+    // console.log(`V2EX Striker: Extracted info for ${claimedCodeInfo.size} unique potential used codes.`); // Less verbose
 
     if (claimedCodeInfo.size === 0) {
         console.log('V2EX Striker: No potential used codes found in comments matching criteria. Exiting marking phase.');
@@ -317,13 +434,12 @@
     // 2. Find and mark Codes in main post and supplements
     const contentAreas = [
         document.querySelector('.topic_content'),
-        ...document.querySelectorAll('.subtle .topic_content')
+        ...document.querySelectorAll('.subtle .topic_content') // Corrected selector
     ].filter(Boolean);
 
-    console.log(`V2EX Striker: Found ${contentAreas.length} content areas to scan for marking.`);
+    // console.log(`V2EX Striker: Found ${contentAreas.length} content areas to scan for marking.`); // Less verbose
 
     contentAreas.forEach((area) => {
-        // (Marking logic remains the same)
         const textNodes = [];
         findTextNodes(area, textNodes);
 
@@ -336,8 +452,9 @@
             let match;
             let lastIndex = 0;
             const newNodeContainer = document.createDocumentFragment();
-            const regex = new RegExp(codeRegex.source, 'gi');
-            regex.lastIndex = 0;
+            // Create a new RegExp instance based on the active one for stateful matching (lastIndex)
+            const regex = new RegExp(activeCodeRegex.source, activeCodeRegex.flags);
+            regex.lastIndex = 0; // Reset
 
             while ((match = regex.exec(nodeText)) !== null) {
                 const matchedCode = match[0];
@@ -366,6 +483,14 @@
                         newNodeContainer.appendChild(userLink);
                     }
                     lastIndex = regex.lastIndex;
+                     // Prevent infinite loops for zero-length matches (shouldn't happen with current regex, but good practice)
+                    if (lastIndex === match.index) {
+                       regex.lastIndex++;
+                    }
+                }
+                 // Ensure progress even if no match is found in claimedCodeInfo
+                 if (regex.lastIndex === match.index) {
+                    regex.lastIndex++;
                 }
             }
 
